@@ -1,0 +1,272 @@
+/**
+ * @name OrionQuestsBackground
+ * @author R1universe (BetterDiscord adaptation), nyxxbit (Orion engine)
+ * @description BetterDiscord adaptation of Orion: runs in background while Discord is open and shows controls on the Quests page. Uses a pinned upstream engine with integrity validation.
+ * @version 0.1.0
+ * @source https://github.com/R1universe/discord-quests-auto-orbs
+ */
+/*
+MIT license. Original Orion engine: Copyright (c) 2026 Gabriel Bertolassi.
+BetterDiscord adaptation is distributed under the MIT license; see LICENSE.
+The plugin loads exactly one pinned version of the upstream source from GitHub,
+verifies its Git blob SHA-1 before executing, and never auto-updates the engine.
+An optional build script can embed the upstream engine for fully offline use.
+*/
+
+module.exports = class OrionQuestsBackground {
+    constructor() {
+        this.api = new BdApi('OrionQuestsBackground');
+        this.settings = Object.assign({
+            autoRun: true,
+            autoEnroll: true,
+            autoClaim: false,
+            playSound: false,
+            randomDelay: false
+        }, this.api.Data.load('settings') || {});
+        this.stopped = true;
+        this.paused = false;
+        this.launching = false;
+        this.lastAttempt = 0;
+        this.nextAttempt = 0;
+        this.timer = null;
+        this.source = null;
+        this.banner = null;
+        this.sessionToken = 0;
+    }
+
+    // Pinned 2026-10-20 engine release. The SHA is Git's blob SHA-1,
+    // calculated over `blob <UTF8 length>\0<UTF8 bytes>` (not just the file).
+    static get ENGINE_URL() {
+        return 'https://raw.githubusercontent.com/nyxxbit/discord-quest-completer/7b21ac365dd38686d25933dc84d46e2bdb2c2b2a/index.js';
+    }
+    static get ENGINE_GIT_SHA() { return '4f84fb5b0012af64ffe6f01308574539de273ac0'; }
+
+    start() {
+        this.stopped = false;
+        this.paused = false;
+        this.sessionToken++;
+        const self = this;
+        window.__orionBDBridge = {
+            isQuestsRoute: () => self.isQuestsRoute(),
+            getAutoOptions: () => ({
+                autoEnroll: !!self.settings.autoEnroll,
+                autoClaim: !!self.settings.autoClaim,
+                playSound: !!self.settings.playSound,
+                randomDelay: !!self.settings.randomDelay
+            }),
+            shouldAutoRun: () => !!self.settings.autoRun,
+            pauseByUser: () => {
+                self.paused = true;
+                self.syncUI();
+                self.toast('Orion paused. Resume it from the Quests page or plugin settings.', 'info');
+            },
+            engineStopped: () => { self.nextAttempt = Date.now() + 5 * 60 * 1000; self.syncUI(); },
+            suspended: (message) => {
+                self.paused = true;
+                self.toast(message || 'Quest access is suspended. Auto-run has been paused.', 'error');
+                self.syncUI();
+            }
+        };
+
+        // Checking route once per second avoids brittle patches of Discord's router.
+        // Refresh/SPA navigation and direct loading of /quest-home all work.
+        this.timer = setInterval(() => this.tick(), 1000);
+        this.tick();
+    }
+
+    stop() {
+        this.stopped = true;
+        this.sessionToken++;
+        this.paused = true;
+        if (this.timer) clearInterval(this.timer);
+        this.timer = null;
+        // Triggers Orion's own shutdown, releasing patched process/game state,
+        // heartbeat listeners and active timers. Never just remove the overlay.
+        try { document.getElementById('orion-stop')?.click(); } catch (err) { console.warn('[OrionBD] stop failed', err); }
+        this.banner?.remove();
+        this.banner = null;
+        if (window.__orionBDBridge?.isQuestsRoute) delete window.__orionBDBridge;
+    }
+
+    isQuestsRoute() {
+        const path = String(location.pathname || '');
+        return /(?:^|\/)(?:quest-home|quests)(?:\/|$)/i.test(path);
+    }
+
+    toast(message, type = 'info') {
+        try { this.api.UI.showToast(message, { type }); }
+        catch (_) { console.log('[OrionBD]', message); }
+    }
+
+    async verifyGitBlob(text) {
+        if (!globalThis.crypto?.subtle || typeof TextEncoder === 'undefined') {
+            throw new Error('WebCrypto is required to verify the pinned engine.');
+        }
+        const body = new TextEncoder().encode(text);
+        const head = new TextEncoder().encode(`blob ${body.length}\0`);
+        const blob = new Uint8Array(head.length + body.length);
+        blob.set(head); blob.set(body, head.length);
+        const digest = await crypto.subtle.digest('SHA-1', blob);
+        const hex = Array.from(new Uint8Array(digest), n => n.toString(16).padStart(2, '0')).join('');
+        if (hex !== OrionQuestsBackground.ENGINE_GIT_SHA) {
+            throw new Error('Engine integrity mismatch; refusing to execute remote code.');
+        }
+    }
+
+    async obtainSource() {
+        if (this.source) return this.source;
+        // Builds generated by build_offline.py can replace this with a locally
+        // embedded constant and do not make any network request.
+        const res = await this.api.Net.fetch(OrionQuestsBackground.ENGINE_URL, { timeout: 20000 });
+        if (!res.ok) throw new Error(`GitHub returned HTTP ${res.status}`);
+        const text = await res.text();
+        await this.verifyGitBlob(text);
+        this.source = text;
+        return text;
+    }
+
+    patchEngine(source) {
+        let modified = source;
+        // Fail closed when upstream code does not match the reviewed/pinned version.
+        const changes = [
+            ["function loadModules() {\n        try {",
+             `function loadModules() {\n        try {\n            // BetterDiscord exposes the real client module cache even on Stable.\n            // Prefer its supported Webpack API over the console script's chunk hack.\n            if (window.BdApi?.Webpack) {\n                const W = window.BdApi.Webpack;\n                try {\n                    Mods = {\n                        QuestStore: W.getStore('QuestStore') || W.getStore('QuestsStore'),\n                        RunStore: W.getStore('RunningGameStore'),\n                        StreamStore: W.getStore('ApplicationStreamingStore'),\n                        ChanStore: W.getStore('ChannelStore'),\n                        GuildChanStore: W.getStore('GuildChannelStore'),\n                        UserStore: W.getStore('UserStore'),\n                        OrbStore: W.getStore('VirtualCurrencyStore'),\n                        Premium: W.getByKeys('canUseMoreQuestOrbs', 'canUseShopDiscounts'),\n                        Dispatcher: W.getByKeys('dispatch', 'subscribe', 'flushWaitQueue') || W.getByKeys('dispatch', 'subscribe'),\n                        API: W.getByKeys('get', 'post', 'del'),\n                        Router: null,\n                        ShowCurrentGame: null\n                    };\n                    if (Mods.QuestStore && Mods.RunStore && Mods.Dispatcher && Mods.API) {\n                        Patcher.init(Mods.RunStore);\n                        Logger.log('[System] BetterDiscord Webpack adapter ready.', 'info');\n                        return true;\n                    }\n                    Logger.log('[System] BetterDiscord module adapter incomplete; trying upstream fallback.', 'warn');\n                } catch (e) { Logger.log('[System] BetterDiscord adapter: ' + e.message, 'warn'); }\n            }`],
+            ["document.body.appendChild(this.root);",
+             "document.body.appendChild(this.root); this.root.style.display = window.__orionBDBridge?.isQuestsRoute() ? 'flex' : 'none';"],
+            ["document.getElementById('orion-stop').onclick = () => this.shutdown();",
+             "document.getElementById('orion-stop').onclick = () => { window.__orionBDBridge?.pauseByUser(); this.shutdown(); };"],
+            ["window.orionLock = false;\n\n            // Capture the nodes",
+             "window.orionLock = false; window.__orionBDBridge?.engineStopped();\n\n            // Capture the nodes"],
+            ["const pickerResult = await Logger.showQuestPicker(quests);",
+             "const pickerResult = window.__orionBDBridge?.shouldAutoRun() ? { selectedQuests: new Set(quests.map(q => q.id)), ...window.__orionBDBridge.getAutoOptions() } : await Logger.showQuestPicker(quests);"],
+            ["if (hasUnclaimed) {\n            Logger.log('[System] Quest cycle finished. Claim your rewards above, then click STOP.', 'info');\n            return; // skip shutdown; the STOP button still works\n        }",
+             "if (hasUnclaimed && !window.__orionBDBridge?.shouldAutoRun()) {\n            Logger.log('[System] Quest cycle finished. Claim your rewards above, then click STOP.', 'info');\n            return;\n        }"],
+        ];
+        for (const [before, after] of changes) {
+            if (!modified.includes(before)) throw new Error(`Unexpected upstream engine format. Missing anchor: ${before.slice(0, 70)}`);
+            if (modified.split(before).length !== 2) throw new Error(`Ambiguous patch anchor: ${before.slice(0, 70)}`);
+            modified = modified.replace(before, after);
+        }
+        // Respect Discord's explicit quest account restrictions; don't re-start
+        // the engine repeatedly once the account has been blocked.
+        const suspensionMatches = [
+            "Logger.log(`[System] Discord has suspended quest access on this account ${when}. Its own client refuses to start a quest in this state, so Orion stops too.`, 'err');",
+            "Logger.log(`[System] Discord has blocked quest enrollment on this account until ${blockedUntil.toLocaleString()}. Stopping instead of retrying.`, 'err');"
+        ];
+        for (const phrase of suspensionMatches) {
+            if (modified.includes(phrase)) modified = modified.replace(phrase,
+                `${phrase}\n                    window.__orionBDBridge?.suspended('Discord has restricted quest access. Orion auto-run has been paused.');`);
+        }
+        return modified;
+    }
+
+    async launch() {
+        if (this.launching || this.stopped || this.paused || window.orionLock) return;
+        this.launching = true;
+        this.lastAttempt = Date.now();
+        this.nextAttempt = Date.now() + 5 * 60 * 1000;
+        const token = this.sessionToken;
+        try {
+            const source = await this.obtainSource();
+            if (this.stopped || this.paused || token !== this.sessionToken) return;
+            const modified = this.patchEngine(source);
+            // A pinned engine (verified above), not a mutable main-branch URL.
+            // BetterDiscord itself executes plugins in its privileged renderer.
+            (0, eval)(modified + '\n//# sourceURL=OrionQuestsPinnedEngine.js');
+            this.syncUI();
+        } catch (e) {
+            console.error('[OrionBD]', e);
+            this.toast(`Orion could not start: ${e.message || e}`, 'error');
+        } finally {
+            this.launching = false;
+        }
+    }
+
+    tick() {
+        if (this.stopped) return;
+        this.syncUI();
+        // Only the UI depends on the Quests route; quest processing does not.
+        if (this.paused || !this.settings.autoRun || this.launching || window.orionLock) return;
+        if (Date.now() < this.nextAttempt) return;
+        void this.launch();
+    }
+
+    syncUI() {
+        if (this.stopped) return;
+        const questsRoute = this.isQuestsRoute();
+        const nativeUI = document.getElementById('orion-ui');
+        if (nativeUI) nativeUI.style.display = questsRoute ? 'flex' : 'none';
+        if (!questsRoute || nativeUI) {
+            this.banner?.remove(); this.banner = null;
+            return;
+        }
+        if (!this.banner) {
+            this.banner = document.createElement('div');
+            this.banner.id = 'orion-bd-status';
+            this.banner.style.cssText = 'position:fixed;right:18px;bottom:18px;z-index:1001;padding:12px 14px;border-radius:10px;background:var(--background-base-low,#25272c);color:var(--text-default,#fff);box-shadow:0 5px 25px #0006;font:12px var(--font-primary,sans-serif);display:flex;align-items:center;gap:12px;border:1px solid var(--border-subtle,#555);';
+            const label = document.createElement('span');
+            label.id = 'orion-bd-label';
+            this.banner.appendChild(label);
+            const btn = document.createElement('button');
+            btn.type = 'button'; btn.id = 'orion-bd-action';
+            btn.style.cssText = 'cursor:pointer;padding:6px 10px;color:white;border:0;border-radius:6px;background:#5865f2;';
+            btn.onclick = () => {
+                if (this.paused) { this.paused = false; this.nextAttempt = 0; }
+                else { this.paused = true; document.getElementById('orion-stop')?.click(); }
+                this.syncUI();
+                if (!this.paused) void this.launch();
+            };
+            this.banner.appendChild(btn);
+            document.body.appendChild(this.banner);
+        }
+        const message = this.paused ? 'Paused' : this.launching ? 'Starting...' :
+            (!this.settings.autoRun ? 'Manual mode' : 'Background monitoring');
+        this.banner.querySelector('#orion-bd-label').textContent = `Orion · ${message}`;
+        const btn = this.banner.querySelector('#orion-bd-action');
+        btn.textContent = this.paused || !this.settings.autoRun ? 'Resume' : 'Pause';
+        btn.onclick = () => {
+            if (this.paused || !this.settings.autoRun) {
+                this.paused = false; this.settings.autoRun = true; this.saveSettings(); this.nextAttempt = 0;
+                void this.launch();
+            } else { this.paused = true; document.getElementById('orion-stop')?.click(); }
+            this.syncUI();
+        };
+    }
+
+    saveSettings() { this.api.Data.save('settings', this.settings); }
+
+    getSettingsPanel() {
+        const panel = document.createElement('div');
+        panel.style.cssText = 'padding:16px;display:flex;flex-direction:column;gap:14px;color:var(--text-default);';
+        const title = document.createElement('p');
+        title.textContent = 'The engine runs while the Discord desktop client is open. Its panel is visible only on Quests. Changes to quest-processing options take effect on the next run.';
+        panel.append(title);
+        const options = [
+            ['autoRun', 'Automatically run available quests in the background'],
+            ['autoEnroll', 'Automatically enroll in quests'],
+            ['autoClaim', 'Automatically claim rewards (captcha may require manual action)'],
+            ['playSound', 'Play a sound when a quest finishes'],
+            ['randomDelay', 'Add random delays between quest batches']
+        ];
+        for (const [key, text] of options) {
+            const row = document.createElement('label');
+            row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer;';
+            row.append(document.createTextNode(text));
+            const input = document.createElement('input');
+            input.type = 'checkbox'; input.checked = !!this.settings[key];
+            input.onchange = () => {
+                this.settings[key] = input.checked;
+                this.saveSettings();
+                if (key === 'autoRun' && input.checked) { this.paused = false; this.nextAttempt = 0; void this.launch(); }
+                if (key === 'autoRun' && !input.checked) { this.paused = true; document.getElementById('orion-stop')?.click(); }
+                this.syncUI();
+            };
+            row.append(input); panel.append(row);
+        }
+        const note = document.createElement('small');
+        note.style.opacity = '.7';
+        note.textContent = 'WARNING: Discord has penalized accounts for inauthentic quest completion. BetterDiscord does not prevent account restrictions.';
+        panel.append(note);
+        return panel;
+    }
+};
