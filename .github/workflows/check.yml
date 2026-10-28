@@ -1,0 +1,20 @@
+name: Check BetterDiscord plugin
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check plugin JavaScript syntax
+        run: node --check OrionQuestsBackground.plugin.js
+      - name: Run unit tests
+        run: node --test tests/plugin.test.cjs
+      - name: Check Python builder syntax
+        run: python3 -m py_compile build_offline.py
