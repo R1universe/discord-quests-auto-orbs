@@ -24,6 +24,38 @@ Unofficial BetterDiscord port of [nyxxbit/discord-quest-completer](https://githu
 
 The included loader retrieves a **fixed, non-updating** upstream engine from GitHub on its first launch, validates its Git blob hash, and then executes it. It requires connectivity to `raw.githubusercontent.com` when first started, but **does not download newer versions automatically**. A pinned loader is easier to audit than an unchecked "latest version" downloader, but a local bundled version is preferable.
 
+## Discord Canary — standalone console edition
+
+The repository also provides **[OrionQuestsCanary.console.js](./OrionQuestsCanary.console.js)** — a full, self-contained JavaScript build for the **Discord Canary desktop DevTools console**, with **no BetterDiscord dependency**.
+
+1. Open the Discord **Canary desktop** app, sign in, and open Developer Tools (typically `Ctrl+Shift+I` on Windows/Linux or `Cmd+Option+I` on macOS, if available in your Canary build).
+2. Read the downloaded source before running it. Open [OrionQuestsCanary.console.js](./OrionQuestsCanary.console.js), copy **its entire contents** and paste it into the Canary **Console**.
+3. Press Enter to start. Background quest monitoring begins immediately, independent of the active Discord page. Open **Quests** to show Orion's dashboard; navigating to chat hides the panel without stopping the engine.
+4. The small status widget on Quests can pause or resume monitoring when the full dashboard isn't open. Use the console commands below for explicit control.
+
+```js
+OrionQuestsCanary.status();                       // Current state
+OrionQuestsCanary.pause();                        // Pause and stop current tasks
+OrionQuestsCanary.resume();                       // Resume background monitoring
+OrionQuestsCanary.setOption('autoEnroll', false);  // Change for next run
+OrionQuestsCanary.setOption('autoClaim', true);    // Opt in to auto-claim
+OrionQuestsCanary.stop();                         // Fully detach
+```
+
+The console build uses the **same pinned upstream Orion revision** as the BetterDiscord plugin, with specific dashboard and lifecycle changes. Unlike the BetterDiscord loader, the console edition contains the full modified engine **in the file itself** and performs **no remote JavaScript downloads** at runtime.
+
+**Session limitation:** the console script runs only while that Discord Canary client session remains open. After a client reload/restart, paste the script again. It cannot run while Canary is closed and it does not install automatic startup. To have actual launch-at-login behavior, use the BetterDiscord plugin instead. Avoid pasting code into DevTools that you have not reviewed.
+
+## Кратко: консольная версия для Discord Canary
+
+1. Скачай [OrionQuestsCanary.console.js](./OrionQuestsCanary.console.js) и открой файл в текстовом редакторе.
+2. В настольном **Discord Canary** открой DevTools → Console, вставь **весь код** и нажми Enter.
+3. Скрипт проверяет Quests в фоне во время работы Canary; панель видна только в разделе Quests и скрывается при переходе в чаты.
+4. Для управления доступны `OrionQuestsCanary.status()`, `.pause()`, `.resume()`, `.stop()`, `.setOption('autoClaim', true)`.
+5. После перезапуска или перезагрузки Canary код нужно вставить повторно. Консольная версия не запускается автоматически вместе с Discord.
+
+**Предупреждение:** автоматическое выполнение Quests может нарушать правила Discord и приводить к ограничениям аккаунта. Совместимость с актуальной сборкой Canary не гарантируется.
+
 ## Build a completely standalone plugin (recommended)
 
 If you have Python 3 installed, run:
@@ -46,6 +78,7 @@ It downloads and verifies the fixed Orion source once and creates `dist/OrionQue
 ## Code layout
 
 - `OrionQuestsBackground.plugin.js`: installable BetterDiscord plugin, pinned loader with engine integration, UI lifecycle, and settings.
+- `OrionQuestsCanary.console.js`: single-file console edition with embedded, pinned engine for Discord Canary.
 - `build_offline.py`: one-command standalone bundler.
 - `tests/`: static and lifecycle checks.
 - `LICENSE`: MIT original source attribution and derivative licensing.
@@ -69,6 +102,7 @@ Based on Orion by **Gabriel Bertolassi / nyxxbit**, licensed MIT. Original code 
 This BetterDiscord adaptation is maintained here: **https://github.com/R1universe/discord-quests-auto-orbs**.
 
 - Direct plugin file: [OrionQuestsBackground.plugin.js](./OrionQuestsBackground.plugin.js)
+- Discord Canary console version: [OrionQuestsCanary.console.js](./OrionQuestsCanary.console.js)
 - Run static tests with `node --test tests/plugin.test.cjs`.
 - Build an offline standalone plugin locally with `python3 build_offline.py`.
 
