@@ -14,7 +14,9 @@ jobs:
           node-version: '22'
       - name: Check plugin JavaScript syntax
         run: node --check OrionQuestsBackground.plugin.js
+      - name: Check Canary console JavaScript syntax
+        run: node --check OrionQuestsCanary.console.js
       - name: Run unit tests
-        run: node --test tests/plugin.test.cjs
+        run: node --test tests/*.test.cjs
       - name: Check Python builder syntax
         run: python3 -m py_compile build_offline.py
