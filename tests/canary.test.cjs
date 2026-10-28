@@ -54,7 +54,7 @@ test('session controller starts once, pauses, resumes and fully stops', () => {
 
     runner.setOption('autoClaim', true);
     assert.equal(runner.settings.autoClaim, true);
-    assert.throws(() => runner.setOption('unexpected', true), TypeError);
+    assert.throws(() => runner.setOption('unexpected', true), /Expected one of/);
     runner.pause();
     assert.equal(runner.paused, true);
     runner.resume();
